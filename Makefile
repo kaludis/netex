@@ -1,10 +1,10 @@
 CC=gcc
 
-CFLAGS=-c -Wall -Wextra -ansi
+CFLAGS=-c -Wall -Wextra
 
 LDFLAGS=
 
-SOURCES=main.c cfgreader.c
+SOURCES=main.c cfgreader.c network.c
 
 OBJECTS=$(SOURCES:.c=.o)
 
