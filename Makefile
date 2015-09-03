@@ -1,6 +1,6 @@
 CC=gcc
 
-CFLAGS=-c -Wall -Wextra
+CFLAGS=-c -Wall -Wextra -g -O0
 
 LDFLAGS=
 

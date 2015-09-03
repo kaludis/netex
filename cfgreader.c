@@ -45,7 +45,8 @@ void read_config(const char* file_name)
     assert(file_name);
 
     char buf[LINE_SIZE];
-    struct command* cmd_ptr;
+    struct command *cmd_ptr;
+    cmd_ptr = NULL;
 
     FILE* cmd_file_ptr = fopen(file_name, "r");
     if (!cmd_file_ptr) {
@@ -54,8 +55,7 @@ void read_config(const char* file_name)
 
     while (fgets(buf, LINE_SIZE, cmd_file_ptr) != NULL) {
 	cmd_ptr = get_cmd_from_line(buf);
-	if (cmd_ptr)
-	    LIST_INSERT_HEAD(&commands_head, cmd_ptr, commands);
+	if (cmd_ptr) LIST_INSERT_HEAD(&commands_head, cmd_ptr, commands);
     }
 
     if (feof(cmd_file_ptr)) {

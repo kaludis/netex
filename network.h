@@ -3,4 +3,6 @@
 
 void listen_ports();
 
+void shutdown_signal();
+
 #endif // NETWORK_H_
