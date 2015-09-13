@@ -6,11 +6,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <assert.h>
 #include <errno.h>
 
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -20,7 +23,8 @@
 #include <sys/epoll.h>
 
 #define BACKLOG 10
-#define HOST_NAME "localhost"
+#define HOST_NAME "192.168.0.17"
+#define BUFLEN 1024
 
 static struct events_info {
     struct epoll_event* events;
@@ -30,6 +34,7 @@ static struct events_info {
 struct address {
     struct addrinfo* ai_ptr;
     struct command* cmd_ptr;
+    int socket;
     LIST_ENTRY(address)  addresses;
 };
 
@@ -155,7 +160,7 @@ void deallocate_epoll_events()
 }
 
 static
-int close_socket(int sfd)
+int close_fd(int sfd)
 {
     int ret;   
 
@@ -181,11 +186,11 @@ void set_nonblock(int sfd)
     flags = fcntl(sfd, F_GETFL,0);
     if (flags == -1) {
 	perror("fcntl()");
-	close_socket(sfd);	
+	close_fd(sfd);	
     } else {
 	if (fcntl(sfd, F_SETFL, flags | O_NONBLOCK) == -1) {
 	    perror("fcntl()");
-	    close_socket(sfd);		    
+	    close_fd(sfd);		    
 	}
     }
 }
@@ -196,6 +201,7 @@ void init_epoll_events()
     struct addrinfo* ptr;
     struct address* addr_ptr;
     int sock_index;
+
     sock_index = 0;
 
     if (allocate_epoll_events() != -1) {
@@ -237,7 +243,7 @@ void init_epoll_events()
 			 */
 			if (bind(sfd, ptr->ai_addr, ptr->ai_addrlen) == -1) {
 			    perror("bind()");
-			    close_socket(sfd);
+			    close_fd(sfd);
 			    continue;
 			}
 
@@ -246,13 +252,16 @@ void init_epoll_events()
 			 */
 			if (listen(sfd, BACKLOG) == -1) {
 			    perror("listen()");
-			    close_socket(sfd);
+			    close_fd(sfd);
 			    continue;
 			}
 
 			sfd_events.events[sock_index].data.fd = sfd;
 			sfd_events.events[sock_index].events = 
 			    EPOLLIN | EPOLLOUT;
+
+			addr_ptr->socket = sfd;
+
 			++sock_index;
 			fprintf(stdout, "socket %d created\n", sfd);
 			break;
@@ -269,12 +278,119 @@ void clear_epoll_events()
     int sock_index;
 
     for (sock_index = 0; sock_index < sfd_events.sfd_count; ++sock_index) {
-	if (!close_socket(sfd_events.events[sock_index].data.fd))
+	if (!close_fd(sfd_events.events[sock_index].data.fd))
 	    fprintf(stdout , "socket %d closed\n",
 		    sfd_events.events[sock_index].data.fd);
     }
 
     deallocate_epoll_events();
+}
+
+static
+ssize_t read_all(int sfd)
+{
+    ssize_t bytes;
+    char buf[BUFLEN];
+    
+    while ((bytes = recv(sfd, buf, BUFLEN, 0)) == -1) {
+	if (errno == EINTR) {
+	    continue;
+	} else {
+	    perror("recv()");
+	    break;
+	}
+    }
+
+    
+    if (bytes) {
+	buf[bytes] = '\0';
+	fprintf(stdout, "client told: %s\n", buf);	
+    }
+
+    return bytes;
+}
+
+static
+ssize_t write_all(int sfd, const char* msg)
+{
+    size_t len = strlen(msg);
+    ssize_t bytes, all_bytes;
+    all_bytes = 0;
+
+    while ((len != 0) && (bytes = send(sfd, msg, len, 0)) == -1) {
+	if (bytes == -1) {
+	    perror("write()");
+	    break;
+	}
+	len -= bytes;
+	msg += bytes;
+	all_bytes += bytes;
+    }
+
+    if (!all_bytes) all_bytes = bytes;
+
+    return all_bytes;
+}
+
+static 
+const struct command* find_cmd_by_socket(int socket)
+{
+    struct address* addr_ptr;    
+    const struct command* cmd_ptr;
+
+    cmd_ptr = NULL;
+
+    LIST_FOREACH(addr_ptr, &addresses_head, addresses) {
+	if (addr_ptr->socket == socket) {
+	    cmd_ptr = addr_ptr->cmd_ptr;
+	    break;
+	}
+    }
+
+    return cmd_ptr;
+}
+
+static
+void exec_command(int socket, int listener)
+{
+    pid_t exec_process;
+
+    exec_process = fork();
+    if (exec_process == -1) {
+	perror("fork()");
+    } if (exec_process) {
+	int status;
+	if (waitpid(exec_process, &status, 0) == -1)
+	    perror("waitpid()");
+    } else {
+	int saved_fdout = dup(STDOUT_FILENO);
+	if (saved_fdout == -1) perror("dup(STDOUT_FILENO)");
+
+	int saved_fdin = dup(STDIN_FILENO);
+	if (saved_fdin == -1) perror("dup(STDIN_FILENO)");
+
+				  int saved_fderr = dup(STDERR_FILENO);
+	if (saved_fderr == -1) perror("dup(STDERR_FILENO)");
+
+	if (dup2(socket, STDOUT_FILENO) == -1) perror("dup2(STDOUT_FILENO)");
+	if (dup2(socket, STDIN_FILENO) == -1) perror("dup2(STDIN_FILENO)");
+	if (dup2(socket, STDERR_FILENO) == -1) perror("dup2(STDERR_FILENO)");
+
+	const struct command* cmd_ptr;
+	cmd_ptr = find_cmd_by_socket(listener);
+	fprintf(stdout, "start execute %s command\n", cmd_ptr->name);
+
+	if (execv(cmd_ptr->name, cmd_ptr->args) == -1) perror("execv()");
+
+	if (dup2(saved_fdout, STDOUT_FILENO) == -1) perror("dup2(STDOUT_FILENO)");
+	close_fd(saved_fdout);
+
+	if (dup2(saved_fdin, STDIN_FILENO) == -1) perror("dup2(STDIN_FILENO)");
+	close_fd(saved_fdin);
+
+	if (dup2(saved_fderr, STDERR_FILENO) == -1) perror("dup2(STDERR_FILENO)");    
+	close_fd(saved_fderr);
+    }
 }
 
 void listen_ports()
@@ -314,8 +430,7 @@ void listen_ports()
 
 	    for (sock_index = 0; sock_index < sfd_events.sfd_count; ++sock_index) {
 		int listener = sfd_events.events[sock_index].data.fd;
-		if ((sfd_events.events[sock_index].events & EPOLLOUT) ||
-		    (sfd_events.events[sock_index].events & EPOLLIN)) {
+		if (sfd_events.events[sock_index].events & EPOLLIN) {
 		    struct sockaddr client_info;
 		    socklen_t client_info_size;
 
@@ -331,9 +446,17 @@ void listen_ports()
 			if (!inet_ntop(AF_INET, addr, ipstr, INET6_ADDRSTRLEN)) {
 			    perror("inet_ntop()");
 			} else {
-			    fprintf(stdout, "new client: %s", ipstr);
+			    fprintf(stdout, "new client: %s\n", ipstr);
 			}
-			close_socket(client_fd);
+
+			/* fprintf(stdout, "\t%d bytes has been received\n",  */
+			/* 	(int)read_all(client_fd)); */
+			exec_command(client_fd, listener);
+
+			fprintf(stdout, "\t%d bytes has been sent\n", 
+				(int)write_all(client_fd, "Bye!\n"));
+
+			close_fd(client_fd);
 		    }
 		}
 

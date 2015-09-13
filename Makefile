@@ -1,6 +1,7 @@
-CC=gcc
+CC=clang
 
 CFLAGS=-c -Wall -Wextra -g -O0
+#CFLAGS=-c -Wall -Wextra -O2
 
 LDFLAGS=
 

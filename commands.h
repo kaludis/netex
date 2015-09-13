@@ -5,6 +5,7 @@
 
 struct command {
     char* name;
+    char** args;
     unsigned short port;
     LIST_ENTRY(command) commands;
 };
